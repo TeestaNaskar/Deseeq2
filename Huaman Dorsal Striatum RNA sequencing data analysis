@@ -1,0 +1,95 @@
+#this script is for HUman dorsal striatum RNA sequencing data analysis by DESeq2
+library(DESeq2)
+library(openxlsx)
+library(dplyr)
+library(apeglm)
+
+setwd("/Users/teestanaskar/Dropbox/Teesta/Brain/Human/Bothsex/RNAseq/raw_data/")
+#load data
+data = read.xlsx("Gene_counts/DS_raw_feature_count.xlsx", sheet = 1)
+
+meta = read.xlsx("Metadata.xlsx", sheet = 2)
+colnames(meta) = meta[1,]
+meta = meta[2:nrow(meta),]
+meta$sampleID = paste0(meta$Regions,meta$SerieID)
+rownames(meta) = meta$sampleID
+#filtering for DS
+meta = meta[meta$Regions =="DS",]
+#set the count data
+rownames(data) = data$Geneid
+data = data[,7:ncol(data)]
+#make sure sample order of trait is the same as data
+all(rownames(meta) %in% colnames(data)) #TRUE
+#ordreing my metadata alphabetically
+meta = meta %>% arrange(sampleID)
+#remove any samples that are not matching 
+meta = meta[!(meta$sampleID %in% c("DS10", "DS34")), ]
+data = subset(data, select = -c(DS37, DS38))
+#creating another data file to consider samples from meta
+data2 <- data[, rownames(meta)]
+all(rownames(meta) == colnames(data2)) #TRUE
+data2 <- cbind(gene = rownames(data), data2)
+data <- data2
+#remove subject column and make rownames the gene names
+exprs = data[, 2:ncol(data)]
+rownames(exprs) = data[,1]
+
+meta$condition = as.factor(meta$CbSum)
+#make dataframe of all comparisons
+ref_column <- c("0")
+tx_column <- c("1")
+df_comp = data.frame(ref_column, tx_column)
+
+for(i in 1:dim(df_comp)[1]){
+  #set groups
+  g1 = df_comp[i,1]
+  g2 = df_comp[i,2]
+  print(g1)
+  print(g2)
+  #subset metadata and expression data
+  meta_sub = meta[meta$condition %in% c(g1, g2),]
+  exprs_sub = exprs[,colnames(exprs) %in% meta_sub$sampleID]
+  print(dim(meta_sub))
+  print(dim(exprs_sub))
+  
+  #create DESeq2 object
+  dds <- DESeqDataSetFromMatrix(exprs_sub, colData = meta_sub, design = ~ condition)
+  keep <- rowSums(counts(dds)) >= 10 #subset genes with summed counts equal to or greater than 10 
+  dds <- dds[keep,]
+  dds$condition <- relevel(dds$condition, ref = g1) #set reference group
+  
+  #Run DESeq2, get results
+  dds <- DESeq(dds)
+  resultsNames(dds) # lists the coefficients
+  res <- results(dds, tidy=T)
+  #shrink log fold changes association with condition
+  # res2 <- lfcShrink(dds, coef=resultsNames(dds)[2], type="apeglm")
+  #export results
+  write.csv(res, paste0('deg/','deseq_',g1,'_ds_',g2,'.csv'))
+}
+
+#volcano plots
+vehvscan = read.csv('deg/deseq_veh_vs_can.csv')
+vehvscan$color = 'black'
+vehvscan$color[(vehvscan$log2FoldChange>0) & (vehvscan$pvalue<0.05)]='red'
+vehvscan$color[(vehvscan$log2FoldChange<0) & (vehvscan$pvalue<0.05)]='blue'
+
+plot(vehvscan$log2FoldChange, -log10(vehvscan$pvalue), col=vehvscan$color, 
+     xlab='Log2 Fold Change', ylab='-log10 p-value', title('vehvscan'))
+
+#VST
+#create DESeq2 object
+dds <- DESeqDataSetFromMatrix(exprs, colData = meta, design = ~ condition)
+keep <- rowSums(counts(dds)) >= 10
+#subset genes with summed counts equal to or greater than 10 
+dds <- dds[keep,]
+vsd <- vst(dds, blind=FALSE)
+write.csv(assay(vsd), file='DS_VST_counts.csv')
+#now get the gene id from the raw feature count file
+vst = read.csv("DS_VST_counts.csv")
+#name the first column as Geneid
+colnames(vst)[1] = "Geneid"
+data = read.xlsx("Gene_counts/DS_raw_feature_count.xlsx", sheet = 1)
+vst = left_join(vst, data, by = "Geneid")
+vst = vst[,1:22]
+write.xlsx(vst, "DS_VST_counts.xlsx")
